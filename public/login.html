@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Secure Login</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; background: #2c3e50; margin: 0; }
+        .card { background: white; padding: 2.5rem; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.2); width: 340px; }
+        h2 { margin-top: 0; color: #34495e; text-align: center; margin-bottom: 20px; }
+        .input-group { position: relative; margin-bottom: 15px; }
+        input { width: 100%; padding: 12px; padding-right: 40px; border: 1px solid #ddd; border-radius: 6px; outline: none; transition: 0.3s; font-size: 1rem; }
+        input:focus { border-color: #3498db; box-shadow: 0 0 5px rgba(52,152,219,0.3); }
+        .eye-icon { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); cursor: pointer; font-size: 1.2rem; opacity: 0.6; }
+        button { width: 100%; padding: 12px; background: #3498db; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 1rem; font-weight: bold; transition: 0.2s; margin-top: 5px; }
+        button:hover { background: #2980b9; } button:disabled { background: #bdc3c7; cursor: not-allowed; }
+        #msg { text-align: center; margin-top: 15px; font-size: 0.9rem; min-height: 20px; }
+        .success { color: #2ecc71; } .error { color: #e74c3c; }
+        .footer { text-align: center; font-size: 0.9rem; margin-top: 20px; color: #666; } a { color: #3498db; text-decoration: none; }
+    </style>
+</head>
+<body>
+<div class="card">
+    <h2>Welcome Back</h2>
+    <div class="input-group"><input type="text" id="username" placeholder="Username" autocomplete="off"></div>
+    <div class="input-group">
+        <input type="password" id="password" placeholder="Password">
+        <span class="eye-icon" onclick="togglePass()">👁️</span>
+    </div>
+    <button id="btn" onclick="login()">Login</button>
+    <div id="msg"></div>
+    <div class="footer">New here? <a href="signup.html">Create Account</a></div>
+</div>
+<script>
+    function togglePass() {
+        const input = document.getElementById('password');
+        input.type = input.type === "password" ? "text" : "password";
+    }
+
+    async function getPasswordKey(password) {
+        const enc = new TextEncoder();
+        const keyMaterial = await window.crypto.subtle.importKey("raw", enc.encode(password), { name: "PBKDF2" }, false, ["deriveKey"]);
+        return window.crypto.subtle.deriveKey({ name: "PBKDF2", salt: enc.encode("my-salt"), iterations: 100000, hash: "SHA-256" }, keyMaterial, { name: "AES-GCM", length: 256 }, false, ["decrypt", "unwrapKey"]);
+    }
+
+    async function login() {
+        const username = document.getElementById('username').value.trim();
+        const password = document.getElementById('password').value;
+        const btn = document.getElementById('btn');
+        const msg = document.getElementById('msg');
+        if (!username || !password) return;
+
+        btn.disabled = true; btn.innerText = "Authenticating..."; msg.innerText = "";
+
+        try {
+            const res = await fetch('/api/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+
+            const data = await res.json();
+
+            if (res.ok) {
+                // UNLOCK KEY
+                if (data.enc_priv_key) {
+                    btn.innerText = "Syncing Keys...";
+                    try {
+                        const box = JSON.parse(data.enc_priv_key);
+                        const iv = Uint8Array.from(atob(box.iv), c => c.charCodeAt(0));
+                        const encryptedData = Uint8Array.from(atob(box.data), c => c.charCodeAt(0));
+                        const passwordKey = await getPasswordKey(password);
+                        const decryptedBuffer = await window.crypto.subtle.decrypt({ name: "AES-GCM", iv: iv }, passwordKey, encryptedData);
+                        
+                        localStorage.setItem(`priv_key_${username}`, new TextDecoder().decode(decryptedBuffer));
+                    } catch (e) {
+                        msg.innerText = "Login success, but Key Sync failed.";
+                        btn.disabled = false; return;
+                    }
+                }
+                msg.innerText = "Success! Redirecting..."; msg.className = "success";
+                setTimeout(() => window.location.href = 'chat.html', 1000);
+            } else {
+                msg.innerText = data.error || "Login failed"; msg.className = "error";
+                btn.disabled = false; btn.innerText = "Login";
+            }
+        } catch (err) {
+            msg.innerText = "Server Error."; btn.disabled = false; btn.innerText = "Login";
+        }
+    }
+</script>
+</body>
+</html>
