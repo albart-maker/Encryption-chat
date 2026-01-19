@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Secure Signup</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; background: #2c3e50; margin: 0; }
+        .card { background: white; padding: 2rem; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.2); width: 340px; }
+        h2 { margin-top: 0; color: #34495e; text-align: center; }
+        .input-group { position: relative; margin-bottom: 12px; }
+        input { width: 100%; padding: 12px; padding-right: 40px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; outline: none; transition: 0.3s; font-size: 1rem; }
+        input:focus { border-color: #3498db; box-shadow: 0 0 5px rgba(52,152,219,0.3); }
+        .eye-icon { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); cursor: pointer; font-size: 1.2rem; opacity: 0.6; }
+        .rules-list { font-size: 0.85rem; color: #666; margin-bottom: 15px; background: #f8f9fa; padding: 10px; border-radius: 6px; border: 1px solid #eee; display:none; }
+        .rule-item { margin: 3px 0; display: flex; align-items: center; gap: 8px; }
+        .valid { color: #2ecc71; } .invalid { color: #e74c3c; }
+        button { width: 100%; padding: 12px; background: #3498db; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 1rem; font-weight: bold; transition: 0.2s; margin-top: 5px; }
+        button:hover { background: #2980b9; } button:disabled { background: #bdc3c7; cursor: not-allowed; }
+        #msg { text-align: center; margin-top: 10px; font-size: 0.9rem; } a { color: #3498db; text-decoration: none; }
+    </style>
+</head>
+<body>
+<div class="card">
+    <h2>Create Account</h2>
+    <div class="input-group"><input type="text" id="username" placeholder="Username" autocomplete="off"></div>
+    <div class="input-group">
+        <input type="password" id="password" placeholder="Password" onkeyup="checkPassword()">
+        <span class="eye-icon" onclick="togglePass('password', this)">👁️</span>
+    </div>
+    <div class="rules-list" id="rulesBox">
+        <div class="rule-item" id="rule-length"><span>✕</span> 8+ chars</div>
+        <div class="rule-item" id="rule-num"><span>✕</span> Number (0-9)</div>
+        <div class="rule-item" id="rule-sym"><span>✕</span> Symbol (@$!%*?&)</div>
+    </div>
+    <div class="input-group">
+        <input type="password" id="confirmPass" placeholder="Confirm Password" onkeyup="checkPassword()" onpaste="return false">
+        <span class="eye-icon" onclick="togglePass('confirmPass', this)">👁️</span>
+    </div>
+    <button id="btn" onclick="register()" disabled>Sign Up</button>
+    <div id="msg"></div>
+    <p style="text-align:center;font-size:0.9rem;">Already have an account? <a href="login.html">Login</a></p>
+</div>
+<script>
+    function togglePass(id, icon) {
+        const input = document.getElementById(id);
+        input.type = input.type === "password" ? "text" : "password";
+        icon.innerText = input.type === "password" ? "👁️" : "🙈";
+    }
+
+    function checkPassword() {
+        const pass = document.getElementById('password').value;
+        const confirm = document.getElementById('confirmPass').value;
+        const rulesBox = document.getElementById('rulesBox');
+        rulesBox.style.display = pass.length > 0 ? "block" : "none";
+
+        const hasLen = pass.length >= 8;
+        const hasNum = /\d/.test(pass);
+        const hasSym = /[@$!%*#?&]/.test(pass);
+        
+        updateRule('rule-length', hasLen); updateRule('rule-num', hasNum); updateRule('rule-sym', hasSym);
+        
+        const isMatch = (confirm.length > 0 && pass === confirm);
+        document.getElementById('btn').disabled = !(hasLen && hasNum && hasSym && isMatch);
+    }
+
+    function updateRule(id, valid) {
+        const el = document.getElementById(id);
+        el.className = valid ? "rule-item valid" : "rule-item invalid";
+        el.querySelector('span').innerText = valid ? "✓" : "✕";
+    }
+
+    async function getPasswordKey(password) {
+        const enc = new TextEncoder();
+        const keyMaterial = await window.crypto.subtle.importKey("raw", enc.encode(password), { name: "PBKDF2" }, false, ["deriveKey"]);
+        return window.crypto.subtle.deriveKey({ name: "PBKDF2", salt: enc.encode("my-salt"), iterations: 100000, hash: "SHA-256" }, keyMaterial, { name: "AES-GCM", length: 256 }, false, ["encrypt", "wrapKey"]);
+    }
+
+    async function register() {
+        const username = document.getElementById('username').value.trim();
+        const password = document.getElementById('password').value;
+        const btn = document.getElementById('btn');
+        const msg = document.getElementById('msg');
+        if (!username) return alert("Username required");
+
+        btn.innerText = "Encrypting Keys...";
+        btn.disabled = true;
+
+        try {
+            const keyPair = await window.crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey"]);
+            const publicKeyParams = await window.crypto.subtle.exportKey("jwk", keyPair.publicKey);
+            const privateKeyParams = await window.crypto.subtle.exportKey("jwk", keyPair.privateKey);
+            
+            // LOCK THE KEY
+            const passwordKey = await getPasswordKey(password);
+            const iv = window.crypto.getRandomValues(new Uint8Array(12));
+            const encryptedBuffer = await window.crypto.subtle.encrypt({ name: "AES-GCM", iv: iv }, passwordKey, new TextEncoder().encode(JSON.stringify(privateKeyParams)));
+            
+            const encryptedPrivateKey = JSON.stringify({
+                iv: btoa(String.fromCharCode(...iv)),
+                data: btoa(String.fromCharCode(...new Uint8Array(encryptedBuffer)))
+            });
+
+            localStorage.setItem(`priv_key_${username}`, JSON.stringify(privateKeyParams));
+
+            const res = await fetch('/api/register', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password, publicKey: JSON.stringify(publicKeyParams), encryptedPrivateKey })
+            });
+
+            const data = await res.json();
+            if (res.ok) {
+                msg.innerHTML = '<span style="color:#2ecc71">Success! Redirecting...</span>';
+                setTimeout(() => window.location.href = 'login.html', 1500);
+            } else {
+                msg.innerHTML = `<span style="color:#e74c3c">${data.error}</span>`;
+                btn.disabled = false; btn.innerText = "Sign Up";
+            }
+        } catch (e) {
+            console.error(e);
+            msg.innerText = "Error: " + e.message;
+            btn.disabled = false;
+        }
+    }
+</script>
+</body>
+</html>
