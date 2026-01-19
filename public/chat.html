@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Secure Chat</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        :root { --primary: #008069; --bg: #d9dbd5; --white: #ffffff; --gray: #f0f2f5; --danger: #d32f2f; }
+        body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; height: 100vh; display: flex; background: var(--bg); color: #3b4a54; }
+        .sidebar { width: 350px; background: var(--white); border-right: 1px solid #ddd; display: flex; flex-direction: column; }
+        .action-bar { padding: 10px; background: var(--gray); display: flex; gap: 5px; flex-wrap: wrap; }
+        .btn { flex: 1; padding: 8px; border: none; background: #fff; cursor: pointer; border-radius: 4px; font-weight: 600; font-size: 0.9rem; }
+        .btn:hover { background: #eee; } .btn-logout { color: var(--danger); }
+        .badge { background: #ff3b30; color: white; padding: 2px 6px; border-radius: 50%; font-size: 0.75rem; margin-left: 5px; display: none; }
+        .friend-list { flex: 1; overflow-y: auto; }
+        .friend-item { padding: 12px; display: flex; align-items: center; cursor: pointer; border-bottom: 1px solid #f5f6f6; gap: 10px; }
+        .friend-item:hover { background: var(--gray); }
+        .avatar { width: 35px; height: 35px; background: #ddd; border-radius: 50%; display: flex; justify-content: center; align-items: center; }
+        .main-area { flex: 1; display: flex; flex-direction: column; background: #efeae2; position: relative; }
+        .chat-header { background: var(--gray); padding: 10px 20px; display: flex; align-items: center; visibility: hidden; gap: 10px; border-bottom: 1px solid #ddd; }
+        .chat-body { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 5px; }
+        .msg { padding: 8px 12px; background: var(--white); border-radius: 8px; max-width: 65%; box-shadow: 0 1px 1px rgba(0,0,0,0.1); word-wrap: break-word; }
+        .msg.sent { align-self: flex-end; background: #d9fdd3; }
+        .msg img, .msg video { max-width: 100%; border-radius: 5px; cursor: pointer; margin-top:5px; }
+        .chat-input { padding: 10px; background: var(--gray); display: flex; gap: 10px; align-items: center; }
+        .chat-input input { flex: 1; padding: 10px; border-radius: 8px; border: none; outline: none; }
+        .icon-btn { background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #555; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); backdrop-filter: blur(2px); justify-content: center; align-items: center; z-index: 999; }
+        .modal-content { background: white; width: 350px; padding: 20px; border-radius: 8px; max-height: 80vh; overflow-y: auto; }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        .result-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #eee; }
+        .btn-sm { padding: 5px 10px; background: var(--primary); color: white; border: none; border-radius: 15px; cursor: pointer; }
+        .btn-sm:disabled { background: #ccc; }
+    </style>
+</head>
+<body>
+
+<div class="sidebar">
+    <div style="padding:15px; background:#f0f2f5; font-weight:bold; display:flex; align-items:center; gap:10px;">
+        <div class="avatar">👤</div> <span id="myName">Loading...</span>
+    </div>
+    <div class="action-bar">
+        <button class="btn" onclick="openModal('searchModal')">➕ Add</button>
+        <button class="btn" onclick="checkRequests();openModal('requestsModal')">🔔 <span id="reqBadge" class="badge">0</span></button>
+        <button class="btn btn-logout" onclick="logout()">Log Out</button>
+    </div>
+    <div class="friend-list" id="friendList"></div>
+</div>
+
+<div class="main-area">
+    <div class="chat-header" id="chatHeader">
+        <div class="avatar">👤</div> <b id="chatTitle" style="flex:1">Name</b>
+        <button class="icon-btn" onclick="unfriend()" title="Unfriend" style="color:var(--danger)">🗑️</button>
+    </div>
+    <div class="chat-body" id="messages">
+        <div style="text-align:center; color:#888; margin-top:50px;">🔒 End-to-End Encrypted Chat</div>
+    </div>
+    <div class="chat-input">
+        <input type="file" id="fileInput" hidden onchange="sendFile(this.files[0])">
+        <button class="icon-btn" onclick="document.getElementById('fileInput').click()">📎</button>
+        <input type="text" id="msgInput" placeholder="Message..." disabled onkeypress="if(event.key==='Enter') sendMessage()">
+        <button class="icon-btn" onclick="sendMessage()" style="color:var(--primary)">➤</button>
+    </div>
+</div>
+
+<div id="searchModal" class="modal"><div class="modal-content">
+    <div class="modal-header"><h3>Add Friend</h3><button class="icon-btn" onclick="closeModal('searchModal')">×</button></div>
+    <div style="display:flex; gap:5px; margin-bottom:10px;">
+        <input id="searchInput" placeholder="Username..." style="flex:1; padding:8px;">
+        <button class="btn-sm" onclick="searchUsers()">Search</button>
+    </div>
+    <div id="searchResults"></div>
+</div></div>
+
+<div id="requestsModal" class="modal"><div class="modal-content">
+    <div class="modal-header"><h3>Requests</h3><button class="icon-btn" onclick="closeModal('requestsModal')">×</button></div>
+    <div id="requestList"></div>
+</div></div>
+
+<script>
+    const socket = io();
+    let currentUser, currentChat, myPrivateKey;
+
+    async function init() {
+        try {
+            const res = await fetch('/api/me');
+            if(!res.ok) window.location.href = '/login.html';
+            currentUser = await res.json();
+            document.getElementById('myName').innerText = currentUser.username;
+            
+            const keyJson = localStorage.getItem(`priv_key_${currentUser.username}`);
+            if(!keyJson) return alert("Security Key Missing. Please Re-Login.");
+            
+            myPrivateKey = await window.crypto.subtle.importKey("jwk", JSON.parse(keyJson), { name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey"]);
+            
+            loadFriends();
+            updateBadge(); setInterval(updateBadge, 5000);
+        } catch(e) { console.error(e); }
+    }
+    init();
+
+    async function startChat(friend) {
+        // Refresh Friend Data for Key
+        const res = await fetch('/api/friends');
+        const friends = await res.json();
+        const f = friends.find(u => u.id === friend.id);
+
+        currentChat = f;
+        document.getElementById('chatHeader').style.visibility = 'visible';
+        document.getElementById('chatTitle').innerText = f.username;
+        document.getElementById('messages').innerHTML = '';
+        document.getElementById('msgInput').disabled = false;
+
+        const friendKey = await window.crypto.subtle.importKey("jwk", JSON.parse(f.public_key), { name: "ECDH", namedCurve: "P-256" }, false, []);
+        currentChat.sharedKey = await window.crypto.subtle.deriveKey({ name: "ECDH", public: friendKey }, myPrivateKey, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+        
+        socket.emit('join-chat', f.id);
+    }
+
+    socket.on('room-joined', async (roomId) => {
+        currentChat.roomId = roomId;
+        const res = await fetch(`/api/messages/${roomId}`);
+        const msgs = await res.json();
+        for(const m of msgs) await processMsg(m.content, m.iv, m.sender_id===currentUser.id?'sent':'received');
+        scrollDown();
+    });
+
+    socket.on('receive-message', async (pkg) => {
+        if(currentChat && (pkg.roomId === currentChat.roomId)) {
+            await processMsg(pkg.content, pkg.iv, 'received');
+            scrollDown();
+        }
+    });
+
+    async function sendMessage() {
+        const input = document.getElementById('msgInput');
+        const text = input.value;
+        if(!text) return;
+
+        const content = JSON.stringify({ type: 'text', text });
+        const iv = window.crypto.getRandomValues(new Uint8Array(12));
+        const enc = await window.crypto.subtle.encrypt({ name: "AES-GCM", iv }, currentChat.sharedKey, new TextEncoder().encode(content));
+
+        socket.emit('chat-message', { roomId: currentChat.roomId, data: btoa(String.fromCharCode(...new Uint8Array(enc))), iv: btoa(String.fromCharCode(...iv)) });
+        
+        appendMsg(text, 'sent');
+        input.value = ''; scrollDown();
+    }
+
+    async function sendFile(file) {
+        if(!file) return;
+        const iv = window.crypto.getRandomValues(new Uint8Array(12));
+        const buf = await file.arrayBuffer();
+        const encBuf = await window.crypto.subtle.encrypt({ name: "AES-GCM", iv }, currentChat.sharedKey, buf);
+        
+        const fd = new FormData(); fd.append('file', new Blob([encBuf]));
+        const res = await fetch('/api/upload', { method:'POST', body:fd });
+        const data = await res.json();
+
+        const meta = JSON.stringify({ type:'file', fileId:data.fileId, name:file.name, mime:file.type, fileIv:btoa(String.fromCharCode(...iv)) });
+        const msgIv = window.crypto.getRandomValues(new Uint8Array(12));
+        const encMeta = await window.crypto.subtle.encrypt({ name: "AES-GCM", iv:msgIv }, currentChat.sharedKey, new TextEncoder().encode(meta));
+
+        socket.emit('chat-message', { roomId: currentChat.roomId, data: btoa(String.fromCharCode(...new Uint8Array(encMeta))), iv: btoa(String.fromCharCode(...msgIv)) });
+        
+        renderFile({type:'file', name:file.name, mime:file.type}, URL.createObjectURL(file), 'sent');
+    }
+
+    async function processMsg(dataB64, ivB64, type) {
+        try {
+            const iv = Uint8Array.from(atob(ivB64), c => c.charCodeAt(0));
+            const data = Uint8Array.from(atob(dataB64), c => c.charCodeAt(0));
+            const dec = await window.crypto.subtle.decrypt({ name: "AES-GCM", iv }, currentChat.sharedKey, data);
+            const str = new TextDecoder().decode(dec);
+            
+            let msg; try { msg = JSON.parse(str); } catch { msg = { type:'text', text:str }; }
+
+            if(msg.type === 'text') appendMsg(msg.text, type);
+            else if(msg.type === 'file') {
+                const fRes = await fetch(`/api/download/${msg.fileId}`);
+                const encBlob = await fRes.blob();
+                const fIv = Uint8Array.from(atob(msg.fileIv), c => c.charCodeAt(0));
+                const decFile = await window.crypto.subtle.decrypt({ name: "AES-GCM", iv:fIv }, currentChat.sharedKey, await encBlob.arrayBuffer());
+                renderFile(msg, URL.createObjectURL(new Blob([decFile], {type:msg.mime})), type);
+            }
+        } catch(e) { console.error(e); }
+    }
+
+    function appendMsg(html, type) {
+        const d = document.createElement('div'); d.className = `msg ${type}`; d.innerHTML = html;
+        document.getElementById('messages').appendChild(d);
+    }
+    function renderFile(msg, url, type) {
+        if(msg.mime.startsWith('image/')) appendMsg(`<b>📷 Image</b><br><img src="${url}" onclick="window.open(this.src)">`, type);
+        else if(msg.mime.startsWith('video/')) appendMsg(`<b>🎥 Video</b><br><video src="${url}" controls></video>`, type);
+        else appendMsg(`<a href="${url}" download="${msg.name}" style="text-decoration:none;color:#333">📄 ${msg.name}</a>`, type);
+        scrollDown();
+    }
+
+    async function unfriend() {
+        if(!confirm(`Remove ${currentChat.username}?`)) return;
+        await fetch('/api/friends/remove', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({friendId:currentChat.id})});
+        location.reload();
+    }
+
+    async function searchUsers() {
+        const q = document.getElementById('searchInput').value;
+        const res = await fetch(`/api/users/search?q=${q}`);
+        const users = await res.json();
+        document.getElementById('searchResults').innerHTML = users.length ? users.map(u => `
+            <div class="result-item"><b>${u.username}</b> <button class="btn-sm" onclick="sendReq('${u.id}', this)">Add</button></div>
+        `).join('') : '<p style="text-align:center;color:#888">No users found</p>';
+    }
+
+    async function sendReq(id, btn) {
+        await fetch('/api/friends/request', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({friendId:id})});
+        btn.innerText = "Sent ✓"; btn.disabled = true;
+    }
+
+    async function checkRequests() {
+        const res = await fetch('/api/friends/requests');
+        const reqs = await res.json();
+        document.getElementById('requestList').innerHTML = reqs.length ? reqs.map(u => `
+            <div class="result-item"><b>${u.username}</b> <button class="btn-sm" onclick="acceptReq('${u.id}')">Accept</button></div>
+        `).join('') : '<p style="text-align:center;color:#888">No requests</p>';
+    }
+
+    async function acceptReq(id) {
+        await fetch('/api/friends/accept', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({requesterId:id})});
+        closeModal('requestsModal'); loadFriends(); updateBadge();
+    }
+
+    async function loadFriends() {
+        const res = await fetch('/api/friends');
+        const friends = await res.json();
+        document.getElementById('friendList').innerHTML = friends.map(f => `
+            <div class="friend-item" onclick='startChat(${JSON.stringify(f)})'><div class="avatar">👤</div><b>${f.username}</b></div>
+        `).join('');
+    }
+
+    async function updateBadge() {
+        try {
+            const res = await fetch('/api/friends/requests');
+            const reqs = await res.json();
+            const b = document.getElementById('reqBadge');
+            b.innerText = reqs.length; b.style.display = reqs.length ? 'inline-block' : 'none';
+        } catch(e) {}
+    }
+
+    function openModal(id) { document.getElementById(id).style.display = 'flex'; }
+    function closeModal(id) { document.getElementById(id).style.display = 'none'; }
+    function scrollDown() { const d = document.getElementById('messages'); d.scrollTop = d.scrollHeight; }
+    async function logout() { await fetch('/api/logout', {method:'POST'}); location.href='/login.html'; }
+</script>
+</body>
+</html>
